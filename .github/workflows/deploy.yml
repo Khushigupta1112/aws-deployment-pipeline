@@ -1,0 +1,174 @@
+name: CI/CD - Test, Build, Deploy to AWS EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# id-token: write enables GitHub OIDC federation with AWS (no stored AWS keys).
+permissions:
+  contents: read
+  id-token: write
+
+# Never run two deployments against the same EC2 host at the same time;
+# queue them instead of cancelling so every commit gets deployed in order.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  S3_BUCKET: ${{ secrets.S3_BUCKET }}
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USER: ${{ secrets.EC2_USER }}
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: app
+
+      - name: Run tests
+        run: npm test
+        working-directory: app
+
+  deploy:
+    name: Build, push to ECR, deploy to EC2
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve AWS identifiers
+        id: resolve
+        env:
+          # Role ARN contains the account ID: arn:aws:iam::<account>:role/...
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          account_id="$(echo "${AWS_ROLE_ARN}" | cut -d: -f5)"
+          {
+            echo "account_id=${account_id}"
+            echo "registry=${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+            echo "short_sha=${GITHUB_SHA::7}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${{ steps.resolve.outputs.registry }}"
+
+      - name: Build Docker image (tagged with commit SHA)
+        run: |
+          docker build \
+            -f docker/Dockerfile \
+            --build-arg APP_VERSION="${{ steps.resolve.outputs.short_sha }}" \
+            -t "${{ steps.resolve.outputs.registry }}/${ECR_REPOSITORY}:${IMAGE_TAG}" \
+            -t "${{ steps.resolve.outputs.registry }}/${ECR_REPOSITORY}:latest" \
+            .
+
+      - name: Push image to Amazon ECR
+        run: |
+          docker push "${{ steps.resolve.outputs.registry }}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker push "${{ steps.resolve.outputs.registry }}/${ECR_REPOSITORY}:latest"
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      # Scripts are uploaded on every deploy so the EC2 host always runs the
+      # version from the commit being deployed (no drift, no manual sync).
+      - name: Upload deployment scripts to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new "${EC2_USER}@${EC2_HOST}" "mkdir -p ~/app"
+          scp -o StrictHostKeyChecking=accept-new \
+            scripts/deploy.sh scripts/health-check.sh scripts/rollback.sh \
+            "${EC2_USER}@${EC2_HOST}:~/app/"
+
+      # deploy.sh pulls the exact SHA-tagged image, replaces the container,
+      # health checks it, and rolls back automatically on failure.
+      # A non-zero exit here fails the workflow (set -euo pipefail inside).
+      - name: Deploy new container on EC2
+        id: ssh-deploy
+        run: |
+          ssh -o StrictHostKeyChecking=accept-new "${EC2_USER}@${EC2_HOST}" \
+            "chmod +x ~/app/*.sh && \
+             AWS_REGION='${AWS_REGION}' \
+             ECR_REGISTRY='${{ steps.resolve.outputs.registry }}' \
+             ECR_REPOSITORY='${ECR_REPOSITORY}' \
+             ~/app/deploy.sh ${IMAGE_TAG}"
+
+      # Independent verification from the runner through the public internet:
+      # security group -> port 80 -> container port 3000 -> /health and /.
+      - name: Verify public health endpoint and deployed version
+        id: verify
+        run: |
+          curl -fsS --max-time 10 "http://${EC2_HOST}/health" \
+            | jq -e '.status == "healthy"' >/dev/null
+          curl -fsS --max-time 10 "http://${EC2_HOST}/" \
+            | jq -e --arg v "${{ steps.resolve.outputs.short_sha }}" '.version == $v' >/dev/null
+          echo "Public /health OK; deployed version matches commit ${{ steps.resolve.outputs.short_sha }}"
+
+      # Deployment log is uploaded on SUCCESS and FAILURE so failed deploys
+      # are also auditable in S3. No secrets are written to the log.
+      - name: Write deployment log and upload to S3
+        if: always()
+        run: |
+          status="FAILED"
+          if [[ "${{ steps.ssh-deploy.outcome }}" == "success" && "${{ steps.verify.outcome }}" == "success" ]]; then
+            status="SUCCESS"
+          fi
+
+          log_date="$(date -u +%F)"
+          log_dir="deploy-log"
+          log_file="${log_dir}/${IMAGE_TAG}.log"
+          mkdir -p "${log_dir}"
+
+          {
+            echo "deployment_status=${status}"
+            echo "deployment_timestamp_utc=$(date -u +%FT%TZ)"
+            echo "commit_sha=${IMAGE_TAG}"
+            echo "commit_message=$(git log -1 --pretty=%s)"
+            echo "commit_author=$(git log -1 --pretty=%an)"
+            echo "triggered_by=${GITHUB_ACTOR}"
+            echo "image=${{ steps.resolve.outputs.registry }}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+            echo "ec2_host=${EC2_HOST}"
+            echo "ec2_user=${EC2_USER}"
+            echo "health_check_result=$([[ "${{ steps.ssh-deploy.outcome }}" == "success" ]] && echo PASSED || echo FAILED)"
+            echo "workflow_run_url=https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > "${log_file}"
+
+          echo "--- deployment log ---"
+          cat "${log_file}"
+
+          aws s3 cp "${log_file}" \
+            "s3://${S3_BUCKET}/deployments/${log_date}/${IMAGE_TAG}.log" \
+            --content-type "text/plain"
+
+          echo "Deployment log uploaded to s3://${S3_BUCKET}/deployments/${log_date}/${IMAGE_TAG}.log"

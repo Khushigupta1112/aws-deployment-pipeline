@@ -1,0 +1,13 @@
+* text=auto
+
+# Force LF so scripts remain runnable on Linux (EC2) even if checked out on Windows.
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.js text eol=lf
+*.tf text eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary

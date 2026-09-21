@@ -1,0 +1,34 @@
+# Keep the build context minimal: only app/package*.json and app/src are copied.
+node_modules
+**/node_modules
+
+# Git metadata
+.git
+.gitignore
+
+# Secrets and environment files (never bake these into images)
+.env
+.env.*
+!.env.example
+
+# CI/CD, infrastructure, and docs are not needed inside the image
+.github
+infra
+docs
+screenshots
+tools
+scripts
+
+# Test files (dev-only, excluded from the production image)
+app/tests
+
+# Project files
+*.md
+LICENSE
+docker-compose.yml
+
+# Editor/OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db

@@ -1,0 +1,23 @@
+{
+  "name": "aws-deployment-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-style Node.js API used to demonstrate an automated AWS CI/CD deployment pipeline",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.0",
+    "vitest": "^3.2.0"
+  }
+}

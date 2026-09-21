@@ -1,0 +1,23 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars is git-ignored — never commit real values.
+
+aws_region       = "ap-south-1"
+environment      = "demo"
+instance_type    = "t3.micro"
+
+# Find your public IP: curl -s https://checkip.amazonaws.com
+# SSH is open ONLY to this range. NEVER use 0.0.0.0/0 for port 22.
+ssh_allowed_cidr = "203.0.113.5/32"
+
+# Contents of your public key file, e.g.:
+#   cat ~/.ssh/id_ed25519.pub
+ssh_public_key   = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-key-comment"
+
+# Where CloudWatch alarm emails go (you must confirm the subscription email).
+alert_email      = "you@example.com"
+
+# GitHub repository allowed to deploy (owner/repo).
+github_repo      = "Khushigupta1112/aws-deployment-pipeline"
+
+log_retention_days   = 90
+cpu_alarm_threshold  = 70

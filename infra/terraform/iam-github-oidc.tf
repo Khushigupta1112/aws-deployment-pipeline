@@ -2,9 +2,9 @@
 # OIDC token for temporary AWS credentials — no long-lived access keys.
 # The trust policy is scoped to ONE repository and ONE branch (main).
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  tags            = { Name = "${var.project_name}-github-oidc" }
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+  tags           = { Name = "${var.project_name}-github-oidc" }
 }
 
 resource "aws_iam_role" "github_deploy" {
@@ -60,6 +60,23 @@ resource "aws_iam_role_policy" "deploy" {
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
         Resource = "${aws_s3_bucket.logs.arn}/deployments/*"
+      },
+      {
+        # The runner opens port 22 for its own IP for the duration of a
+        # deploy and revokes it afterwards (dynamic SSH gatekeeping).
+        Sid      = "ManageSshIngress"
+        Effect   = "Allow"
+        Action   = [
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress"
+        ]
+        Resource = aws_security_group.app.arn
+      },
+      {
+        Sid      = "FindSecurityGroup"
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeSecurityGroups"]
+        Resource = "*"
       }
     ]
   })

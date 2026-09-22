@@ -273,7 +273,10 @@ here (`needs` on the deploy job).
 2. Assume the deploy role via OIDC (`id-token: write`)
 3. ECR login → `docker build --build-arg APP_VERSION=<sha>` → tags
    `:<full-sha>` + `:latest` → push both
-4. SSH: `scp` the deploy scripts up, then `ssh ./deploy.sh <sha>`
+4. SSH: grant the runner's own IP a temporary port-22 rule
+   (`AuthorizeSecurityGroupIngress`), `scp` the deploy scripts up, run
+   `ssh ./deploy.sh <sha>`, then revoke the rule (`if: always()`) — port 22
+   is open ~60 seconds per deploy, to one runner IP at a time
 5. `deploy.sh` pulls the exact image, swaps the container, health checks
    locally, auto-rolls back on failure, exits non-zero on failure
 6. CI curls the **public** `/health` and asserts the served `version`

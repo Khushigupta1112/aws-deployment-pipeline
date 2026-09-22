@@ -18,9 +18,25 @@ item, matching the checklist used during the final audit.
 | Surface | Exposure | Justification / note |
 | --- | --- | --- |
 | TCP 80 | `0.0.0.0/0` | The demo needs to be reachable by browsers and the CI runner's verification curl. |
-| TCP 22 | Your IP only (`ssh_allowed_cidr`) | Deliberately never `0.0.0.0/0`. If your ISP changes your IP, update the SG rule (see Troubleshooting). |
+| TCP 22 | Admin IP (static) + per-deploy runner IP (dynamic) | See "Dynamic SSH gatekeeping" below. Never `0.0.0.0/0`. |
 | TCP 3000 | NOT exposed | The container publishes `80:3000` only. Node listens inside Docker's internal network path; there is no separate route to 3000 from the internet. |
 | HTTPS | Not implemented | Correctly claimed as such. HTTP only; see Future Improvements (ACM + ALB). |
+
+## Dynamic SSH gatekeeping for CI deploys
+
+GitHub Actions runners use shared, ephemeral IPs — a static SSH allowlist
+can never authorize them. Instead, the workflow:
+
+1. Detects the runner's own public IP (`curl https://api.ipify.org`)
+2. Calls `ec2:AuthorizeSecurityGroupIngress` to open **22 for that single
+   IP**, scoped to the deploy SG (IAM permission on the deploy role is
+   scoped to this one security group ARN)
+3. Runs the SSH deploy
+4. Revokes the rule with `if: always()` — even failed deploys close the hole
+
+So port 22 is reachable only for ~60 seconds per deployment, to one runner
+IP at a time, plus your admin IP for manual troubleshooting. The long-term
+improvement is AWS Systems Manager Run Command (no inbound port at all).
 
 ## IAM
 

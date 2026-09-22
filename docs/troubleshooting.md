@@ -34,9 +34,12 @@ Real error messages, real causes, real fixes.
 - The security group allows port 22 only from `ssh_allowed_cidr`. If your IP
   changed since apply, re-apply Terraform or edit the SG rule. Check your
   current IP: `curl -s https://checkip.amazonaws.com`.
-- Instance stopped or terminated → check the console; `terraform apply` after
-  `terraform start`… no — use `aws ec2 start-instances` if you stopped it for
-  cost saving, then re-run the deploy manually via `workflow_dispatch`.
+- CI deploys use dynamic gatekeeping: the runner opens port 22 for its own
+  IP, deploys, then revokes. If the "Grant this runner temporary SSH access"
+  step failed, check the OIDC role policy includes `ec2:AuthorizeSecurityGroupIngress`.
+- Instance stopped or terminated → check the console; use
+  `aws ec2 start-instances` if you stopped it for cost saving, then re-run
+  the deploy manually via `workflow_dispatch`.
 - Key mismatch → `Permission denied (publickey)`: the `EC2_SSH_PRIVATE_KEY`
   secret must be the **private** key (complete, with header/footer, trailing
   newline preserved when pasting into the secret box).

@@ -102,6 +102,21 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
 
+      # The security group restricts port 22 to explicit CIDRs — a GitHub
+      # runner IP is dynamic, so the runner grants itself access for the
+      # duration of this deploy only, then revokes it (see "Revoke" below).
+      - name: Grant this runner temporary SSH access
+        run: |
+          RUNNER_IP="$(curl -fsS https://api.ipify.org)"
+          echo "runner_ip=${RUNNER_IP}" >> "$GITHUB_ENV"
+          SG_ID="$(aws ec2 describe-security-groups \
+            --filters Name=tag:Name,Values=aws-deployment-demo-sg \
+            --query 'SecurityGroups[0].GroupId' --output text)"
+          echo "security_group_id=${SG_ID}" >> "$GITHUB_ENV"
+          aws ec2 authorize-security-group-ingress \
+            --group-id "${SG_ID}" \
+            --protocol tcp --port 22 --cidr "${RUNNER_IP}/32"
+
       # Scripts are uploaded on every deploy so the EC2 host always runs the
       # version from the commit being deployed (no drift, no manual sync).
       - name: Upload deployment scripts to EC2
@@ -134,6 +149,14 @@ jobs:
           curl -fsS --max-time 10 "http://${EC2_HOST}/" \
             | jq -e --arg v "${{ steps.resolve.outputs.short_sha }}" '.version == $v' >/dev/null
           echo "Public /health OK; deployed version matches commit ${{ steps.resolve.outputs.short_sha }}"
+
+      # Always close the temporary SSH hole, even if a step above failed.
+      - name: Revoke runner SSH access
+        if: always()
+        run: |
+          aws ec2 revoke-security-group-ingress \
+            --group-id "${{ env.security_group_id }}" \
+            --protocol tcp --port 22 --cidr "${{ env.runner_ip }}/32"
 
       # Deployment log is uploaded on SUCCESS and FAILURE so failed deploys
       # are also auditable in S3. No secrets are written to the log.
